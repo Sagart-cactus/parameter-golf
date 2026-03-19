@@ -204,13 +204,8 @@ class Block(nn.Module):
         self.mlp = MLP(dim, mlp_mult)
         self.attn_scale = mx.ones((dim,), dtype=mx.float32)
         self.mlp_scale = mx.ones((dim,), dtype=mx.float32)
-        self.resid_mix = mx.array(
-            np.stack((np.ones((dim,), dtype=np.float32), np.zeros((dim,), dtype=np.float32)))
-        )
 
-    def __call__(self, x: mx.array, x0: mx.array) -> mx.array:
-        mix = self.resid_mix.astype(x.dtype)
-        x = mix[0][None, None, :] * x + mix[1][None, None, :] * x0
+    def __call__(self, x: mx.array) -> mx.array:
         attn_out = self.attn(self.attn_norm(x))
         x = x + self.attn_scale.astype(x.dtype)[None, None, :] * attn_out
         x = x + self.mlp_scale.astype(x.dtype)[None, None, :] * self.mlp(self.mlp_norm(x))
@@ -250,9 +245,8 @@ class GPT(nn.Module):
 
     def __call__(self, input_ids: mx.array) -> mx.array:
         x = rms_norm(self.tok_emb(input_ids).astype(COMPUTE_DTYPE))
-        x0 = x
         for i in range(self.num_encoder_layers + self.num_decoder_layers):
-            x = self.blocks[i](x, x0)
+            x = self.blocks[i](x)
         return self.final_norm(x)
 
     def loss(self, input_ids: mx.array, target_ids: mx.array) -> mx.array:
