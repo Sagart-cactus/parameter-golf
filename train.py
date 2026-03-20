@@ -201,13 +201,10 @@ class Block(nn.Module):
         self.mlp_norm = RMSNormNoWeight()
         self.attn = CausalSelfAttention(dim, num_heads, num_kv_heads, rope_base, qk_gain_init)
         self.mlp = MLP(dim, mlp_mult)
-        self.attn_scale = mx.ones((dim,), dtype=mx.float32)
-        self.mlp_scale = mx.ones((dim,), dtype=mx.float32)
 
     def __call__(self, x: mx.array) -> mx.array:
-        attn_out = self.attn(self.attn_norm(x))
-        x = x + self.attn_scale.astype(x.dtype)[None, None, :] * attn_out
-        x = x + self.mlp_scale.astype(x.dtype)[None, None, :] * self.mlp(self.mlp_norm(x))
+        x = x + self.attn(self.attn_norm(x))
+        x = x + self.mlp(self.mlp_norm(x))
         return x
 
 
