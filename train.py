@@ -39,7 +39,7 @@ NUM_KV_HEADS = 4
 MLP_MULT = 2
 LOGIT_SOFTCAP = 30.0
 ROPE_BASE = 10000.0
-QK_GAIN_INIT = 1.5
+QK_GAIN_INIT = 2.5
 TIED_EMBED_INIT_STD = 0.005
 
 # Training — tuned for M4 Pro (48GB). Each step processes TRAIN_BATCH_TOKENS tokens.
