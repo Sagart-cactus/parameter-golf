@@ -69,10 +69,10 @@ MUON_WEIGHT_DECAY = 0.06
 # Eval — larger batch = faster eval. Also control how much of val set to use.
 VAL_BATCH_TOKENS = int(os.environ.get("VAL_BATCH_TOKENS", 524_288))
 # Max val tokens to evaluate (0 = full val set). Set lower for faster iteration.
-MAX_VAL_TOKENS = int(os.environ.get("MAX_VAL_TOKENS", 2_000_000))
+MAX_VAL_TOKENS = int(os.environ.get("MAX_VAL_TOKENS", 5_000_000))
 # Sliding window eval: stride controls overlap (smaller = better BPB, slower eval)
 USE_SLIDING_WINDOW = int(os.environ.get("USE_SLIDING_WINDOW", 1))
-SW_STRIDE = int(os.environ.get("SW_STRIDE", 512))
+SW_STRIDE = int(os.environ.get("SW_STRIDE", 128))
 SW_BATCH_SIZE = int(os.environ.get("SW_BATCH_SIZE", 8))
 
 # ---------------------------------------------------------------------------
