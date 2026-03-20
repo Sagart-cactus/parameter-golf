@@ -191,8 +191,7 @@ class MLP(nn.Module):
         self.proj = CastedLinear(hidden, dim)
 
     def __call__(self, x: mx.array) -> mx.array:
-        x = nn.relu(self.fc(x))
-        return self.proj(x * x)
+        return self.proj(nn.relu(self.fc(x)))
 
 
 class Block(nn.Module):
