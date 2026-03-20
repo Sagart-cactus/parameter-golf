@@ -64,7 +64,7 @@ MUON_BACKEND_STEPS = 5
 MUON_MOMENTUM_WARMUP_START = 0.85
 MUON_MOMENTUM_WARMUP_STEPS = 500
 GRAD_CLIP_NORM = 0.0
-MUON_WEIGHT_DECAY = 0.04
+MUON_WEIGHT_DECAY = 0.06
 
 # Eval — larger batch = faster eval. Also control how much of val set to use.
 VAL_BATCH_TOKENS = int(os.environ.get("VAL_BATCH_TOKENS", 524_288))
