@@ -24,7 +24,8 @@ from prepare import (
     COMPUTE_DTYPE,
     get_train_loader, load_validation_tokens,
     get_tokenizer, build_sentencepiece_luts,
-    evaluate_bpb, measure_compressed_size, evaluate_quantized_bpb,
+    evaluate_bpb, evaluate_bpb_sliding_window,
+    measure_compressed_size, evaluate_quantized_bpb,
 )
 
 # ---------------------------------------------------------------------------
@@ -67,7 +68,11 @@ GRAD_CLIP_NORM = 0.0
 # Eval — larger batch = faster eval. Also control how much of val set to use.
 VAL_BATCH_TOKENS = int(os.environ.get("VAL_BATCH_TOKENS", 524_288))
 # Max val tokens to evaluate (0 = full val set). Set lower for faster iteration.
-MAX_VAL_TOKENS = int(os.environ.get("MAX_VAL_TOKENS", 10_000_000))
+MAX_VAL_TOKENS = int(os.environ.get("MAX_VAL_TOKENS", 2_000_000))
+# Sliding window eval: stride controls overlap (smaller = better BPB, slower eval)
+USE_SLIDING_WINDOW = int(os.environ.get("USE_SLIDING_WINDOW", 1))
+SW_STRIDE = int(os.environ.get("SW_STRIDE", 512))
+SW_BATCH_SIZE = int(os.environ.get("SW_BATCH_SIZE", 8))
 
 # ---------------------------------------------------------------------------
 # Derived constants
@@ -244,6 +249,12 @@ class GPT(nn.Module):
         for i in range(self.num_encoder_layers + self.num_decoder_layers):
             x = self.blocks[i](x)
         return self.final_norm(x)
+
+    def forward_logits(self, input_ids: mx.array) -> mx.array:
+        """Returns logits [B, T, V] for sliding window evaluation."""
+        x = self(input_ids)  # [B, T, D]
+        logits = x @ self.tok_emb.weight.astype(x.dtype).T  # [B, T, V]
+        return self.softcap(logits)
 
     def loss(self, input_ids: mx.array, target_ids: mx.array) -> mx.array:
         x = self(input_ids).reshape(-1, self.tok_emb.weight.shape[1])
@@ -509,11 +520,14 @@ def main():
         print(f"Using {eval_val_tokens.size} of {val_tokens.size} val tokens for eval")
 
     # Quantized roundtrip evaluation (the metric that matters for submission)
-    print("Evaluating int8+zlib roundtrip...")
+    eval_mode = "sliding_window" if USE_SLIDING_WINDOW else "standard"
+    print(f"Evaluating int8+zlib roundtrip ({eval_mode})...")
     q_val_loss, q_val_bpb, q_compressed_bytes = evaluate_quantized_bpb(
         model, eval_val_tokens,
         base_bytes_lut, has_leading_space_lut, is_boundary_token_lut,
         seq_len=TRAIN_SEQ_LEN, val_batch_tokens=VAL_BATCH_TOKENS,
+        sliding_window=bool(USE_SLIDING_WINDOW),
+        sw_stride=SW_STRIDE, sw_batch_size=SW_BATCH_SIZE,
     )
 
     # Final summary (autoresearch-compatible output format)

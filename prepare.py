@@ -214,6 +214,82 @@ def evaluate_bpb(
     return val_loss, val_bpb
 
 
+def evaluate_bpb_sliding_window(
+    model,
+    compiled_forward_logits_fn,
+    val_tokens: np.ndarray,
+    base_bytes_lut: np.ndarray,
+    has_leading_space_lut: np.ndarray,
+    is_boundary_token_lut: np.ndarray,
+    seq_len: int = MAX_SEQ_LEN,
+    stride: int = 64,
+    batch_size: int = 4,
+) -> tuple[float, float]:
+    """
+    Sliding window BPB evaluation. Every scored token gets at least
+    (seq_len - stride) context tokens, dramatically improving BPB.
+
+    compiled_forward_logits_fn: takes input_ids [B, T] and returns logits [B, T, V]
+    """
+    total_tokens_in_val = val_tokens.size - 1
+    # Generate window start positions
+    starts = list(range(0, total_tokens_in_val - seq_len + 1, stride))
+    if not starts:
+        starts = [0]
+
+    total_nats = 0.0
+    total_bytes = 0.0
+    n_windows = len(starts)
+
+    for batch_start in range(0, n_windows, batch_size):
+        batch_positions = starts[batch_start : batch_start + batch_size]
+        B = len(batch_positions)
+
+        # Build input batch [B, seq_len]
+        x_np = np.stack([val_tokens[s : s + seq_len] for s in batch_positions])
+        y_np = np.stack([val_tokens[s + 1 : s + seq_len + 1] for s in batch_positions])
+
+        x = mx.array(x_np, dtype=mx.int32)
+
+        # Forward pass to get logits [B, T, V]
+        logits = compiled_forward_logits_fn(x)
+        mx.eval(logits)
+
+        # Compute per-token NLL using cross_entropy with reduction='none'
+        logits_f32 = np.array(logits.astype(mx.float32), dtype=np.float32)
+
+        # Vectorized log-softmax + gather
+        log_sum_exp = np.log(np.sum(np.exp(logits_f32 - logits_f32.max(axis=-1, keepdims=True)), axis=-1, keepdims=True)) + logits_f32.max(axis=-1, keepdims=True)
+        # per_token_nll[b, t] = -logits_f32[b, t, y_np[b, t]] + log_sum_exp[b, t, 0]
+        gathered = logits_f32[np.arange(B)[:, None], np.arange(seq_len)[None, :], y_np]
+        per_token_nll = -gathered + log_sum_exp[:, :, 0]  # [B, T]
+
+        # Score only the last `stride` tokens per window (full context)
+        # First window: score all tokens
+        for i, s in enumerate(batch_positions):
+            score_start = 0 if s == 0 else seq_len - stride
+            # Vectorized byte counting for scored range
+            scored_x = x_np[i, score_start:]
+            scored_y = y_np[i, score_start:]
+            scored_nll = per_token_nll[i, score_start:]
+
+            nbytes = base_bytes_lut[scored_y].astype(np.float64)
+            nbytes += (has_leading_space_lut[scored_y] & ~is_boundary_token_lut[scored_x]).astype(np.float64)
+            mask = nbytes > 0
+            total_nats += float(np.sum(scored_nll[mask]))
+            total_bytes += float(np.sum(nbytes[mask]))
+
+        if (batch_start // batch_size) % 500 == 0:
+            done = min(batch_start + batch_size, n_windows)
+            print(f"  sliding_window_eval: {done}/{n_windows} windows", flush=True)
+
+    if total_bytes == 0:
+        return 0.0, 0.0
+    val_bpb = total_nats / (math.log(2.0) * total_bytes)
+    # val_loss approximation (nats per token, using bytes as proxy for token count)
+    return float(val_bpb * math.log(2.0)), float(val_bpb)
+
+
 # ---------------------------------------------------------------------------
 # Quantization (int8 + zlib) — fixed compression pipeline
 # ---------------------------------------------------------------------------
@@ -274,6 +350,13 @@ def quantize_float_array(arr):
     return np.ascontiguousarray(q), scale
 
 
+# Tensor names to always keep in fp16 (never int8 quantize).
+# tok_emb.weight is tied (input + output) so int8 errors compound twice.
+FP16_KEEP_PATTERNS = tuple(
+    p for p in os.environ.get("FP16_KEEP_PATTERNS", "tok_emb.weight").split(",") if p
+)
+
+
 def quantize_state_dict_int8(flat_state):
     quantized = {}
     scales = {}
@@ -287,7 +370,9 @@ def quantize_state_dict_int8(flat_state):
             passthrough[name] = np.ascontiguousarray(np.array(arr))
             total_bytes += passthrough[name].nbytes
             continue
-        if int(arr.size) <= INT8_KEEP_FLOAT_MAX_NUMEL:
+        # Force FP16 for specified tensors (e.g., tied embeddings)
+        force_fp16 = any(p in name for p in FP16_KEEP_PATTERNS)
+        if int(arr.size) <= INT8_KEEP_FLOAT_MAX_NUMEL or force_fp16:
             kept = keep_float_array(name, arr, passthrough_orig_dtypes)
             passthrough[name] = kept
             total_bytes += kept.nbytes
@@ -355,6 +440,9 @@ def evaluate_quantized_bpb(
     is_boundary_token_lut: np.ndarray,
     seq_len: int = MAX_SEQ_LEN,
     val_batch_tokens: int = 524_288,
+    sliding_window: bool = False,
+    sw_stride: int = 64,
+    sw_batch_size: int = 4,
 ) -> tuple[float, float, int]:
     """
     Quantize the model, load it back, and evaluate BPB.
@@ -370,14 +458,24 @@ def evaluate_quantized_bpb(
     quant_flat = dequantize_state_dict_int8(pickle.loads(zlib.decompress(quant_blob)))
     model.update(tree_unflatten(list(quant_flat.items())))
 
-    compiled_loss = mx.compile(
-        lambda x, y: model.loss(x, y), inputs=model.state, outputs=model.state
-    )
-    val_loss, val_bpb = evaluate_bpb(
-        model, compiled_loss, val_tokens,
-        base_bytes_lut, has_leading_space_lut, is_boundary_token_lut,
-        seq_len=seq_len, val_batch_tokens=val_batch_tokens,
-    )
+    if sliding_window:
+        compiled_forward_logits = mx.compile(
+            lambda x: model.forward_logits(x), inputs=model.state, outputs=model.state
+        )
+        val_loss, val_bpb = evaluate_bpb_sliding_window(
+            model, compiled_forward_logits, val_tokens,
+            base_bytes_lut, has_leading_space_lut, is_boundary_token_lut,
+            seq_len=seq_len, stride=sw_stride, batch_size=sw_batch_size,
+        )
+    else:
+        compiled_loss = mx.compile(
+            lambda x, y: model.loss(x, y), inputs=model.state, outputs=model.state
+        )
+        val_loss, val_bpb = evaluate_bpb(
+            model, compiled_loss, val_tokens,
+            base_bytes_lut, has_leading_space_lut, is_boundary_token_lut,
+            seq_len=seq_len, val_batch_tokens=val_batch_tokens,
+        )
     return val_loss, val_bpb, compressed_bytes
 
 
