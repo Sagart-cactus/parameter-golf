@@ -64,6 +64,7 @@ MUON_BACKEND_STEPS = 5
 MUON_MOMENTUM_WARMUP_START = 0.85
 MUON_MOMENTUM_WARMUP_STEPS = 500
 GRAD_CLIP_NORM = 0.0
+MUON_WEIGHT_DECAY = 0.02
 
 # Eval — larger batch = faster eval. Also control how much of val set to use.
 VAL_BATCH_TOKENS = int(os.environ.get("VAL_BATCH_TOKENS", 524_288))
@@ -290,7 +291,10 @@ class Muon:
             g_eff = g + momentum * buf
             g_ortho = zeropower_newtonschulz5(g_eff, MUON_BACKEND_STEPS)
             scale = math.sqrt(max(1.0, float(p.shape[0]) / float(p.shape[1])))
-            out[k] = p - lr * (g_ortho * scale).astype(p.dtype)
+            update = lr * (g_ortho * scale).astype(p.dtype)
+            if MUON_WEIGHT_DECAY > 0:
+                update = update + lr * MUON_WEIGHT_DECAY * p
+            out[k] = p - update
         return out
 
 
