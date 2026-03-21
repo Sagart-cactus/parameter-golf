@@ -36,7 +36,7 @@ from mlx.utils import tree_flatten, tree_unflatten
 # ---------------------------------------------------------------------------
 
 MAX_SEQ_LEN = 1024          # context length (matches baseline)
-TIME_BUDGET = int(os.environ.get("TIME_BUDGET", 3600))  # training time budget in seconds (60 min)
+TIME_BUDGET = int(os.environ.get("TIME_BUDGET", 7200))  # training time budget in seconds (2 hours)
 MAX_COMPRESSED_BYTES = 16_000_000  # 16 MB compressed artifact limit
 
 # ---------------------------------------------------------------------------
