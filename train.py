@@ -247,8 +247,14 @@ class GPT(nn.Module):
 
     def __call__(self, input_ids: mx.array) -> mx.array:
         x = rms_norm(self.tok_emb(input_ids).astype(COMPUTE_DTYPE))
-        for i in range(self.num_encoder_layers + self.num_decoder_layers):
+        skips: list[mx.array] = []
+        for i in range(self.num_encoder_layers):
             x = self.blocks[i](x)
+            skips.append(x)
+        for i in range(self.num_decoder_layers):
+            if skips:
+                x = x + self.skip_weights[i].astype(x.dtype)[None, None, :] * skips.pop()
+            x = self.blocks[self.num_encoder_layers + i](x)
         return self.final_norm(x)
 
     def forward_logits(self, input_ids: mx.array) -> mx.array:
