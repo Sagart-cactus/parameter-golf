@@ -207,8 +207,13 @@ class Block(nn.Module):
         self.mlp_norm = RMSNormNoWeight()
         self.attn = CausalSelfAttention(dim, num_heads, num_kv_heads, rope_base, qk_gain_init)
         self.mlp = MLP(dim, mlp_mult)
+        self.resid_mix = mx.array(
+            np.stack((np.ones((dim,), dtype=np.float32), np.zeros((dim,), dtype=np.float32)))
+        )
 
-    def __call__(self, x: mx.array) -> mx.array:
+    def __call__(self, x: mx.array, x0: mx.array) -> mx.array:
+        mix = self.resid_mix.astype(x.dtype)
+        x = mix[0][None, None, :] * x + mix[1][None, None, :] * x0
         x = x + self.attn(self.attn_norm(x))
         x = x + self.mlp(self.mlp_norm(x))
         return x
@@ -247,14 +252,15 @@ class GPT(nn.Module):
 
     def __call__(self, input_ids: mx.array) -> mx.array:
         x = rms_norm(self.tok_emb(input_ids).astype(COMPUTE_DTYPE))
+        x0 = x
         skips: list[mx.array] = []
         for i in range(self.num_encoder_layers):
-            x = self.blocks[i](x)
+            x = self.blocks[i](x, x0)
             skips.append(x)
         for i in range(self.num_decoder_layers):
             if skips:
                 x = x + self.skip_weights[i].astype(x.dtype)[None, None, :] * skips.pop()
-            x = self.blocks[self.num_encoder_layers + i](x)
+            x = self.blocks[self.num_encoder_layers + i](x, x0)
         return self.final_norm(x)
 
     def forward_logits(self, input_ids: mx.array) -> mx.array:
