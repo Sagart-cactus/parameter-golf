@@ -207,6 +207,8 @@ class Block(nn.Module):
         self.mlp_norm = RMSNormNoWeight()
         self.attn = CausalSelfAttention(dim, num_heads, num_kv_heads, rope_base, qk_gain_init)
         self.mlp = MLP(dim, mlp_mult)
+        self.attn_scale = mx.ones((dim,), dtype=mx.float32)
+        self.mlp_scale = mx.ones((dim,), dtype=mx.float32)
         self.resid_mix = mx.array(
             np.stack((np.ones((dim,), dtype=np.float32), np.zeros((dim,), dtype=np.float32)))
         )
@@ -214,8 +216,9 @@ class Block(nn.Module):
     def __call__(self, x: mx.array, x0: mx.array) -> mx.array:
         mix = self.resid_mix.astype(x.dtype)
         x = mix[0][None, None, :] * x + mix[1][None, None, :] * x0
-        x = x + self.attn(self.attn_norm(x))
-        x = x + self.mlp(self.mlp_norm(x))
+        attn_out = self.attn(self.attn_norm(x))
+        x = x + self.attn_scale.astype(x.dtype)[None, None, :] * attn_out
+        x = x + self.mlp_scale.astype(x.dtype)[None, None, :] * self.mlp(self.mlp_norm(x))
         return x
 
 
