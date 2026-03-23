@@ -156,7 +156,8 @@ class RMSNormNoWeight(nn.Module):
 
 
 class CausalSelfAttention(nn.Module):
-    def __init__(self, dim: int, num_heads: int, num_kv_heads: int, rope_base: float, qk_gain_init: float):
+    def __init__(self, dim: int, num_heads: int, num_kv_heads: int, rope_base: float, qk_gain_init: float,
+                 is_first_layer: bool = False):
         super().__init__()
         if dim % num_heads != 0:
             raise ValueError("model_dim must be divisible by num_heads")
@@ -175,18 +176,30 @@ class CausalSelfAttention(nn.Module):
         self.q_gain = mx.ones((num_heads,), dtype=mx.float32) * qk_gain_init
         self.rope = nn.RoPE(self.head_dim, traditional=False, base=rope_base)
         self.scale = self.head_dim ** -0.5
+        self.is_first_layer = is_first_layer
+        # Value Residual (ResFormer): learned lambda to blend in first-block V
+        if not is_first_layer:
+            self.vr_lambda = mx.array([1.0, 0.0], dtype=mx.float32)  # [current_v_weight, v0_weight]
 
-    def __call__(self, x: mx.array) -> mx.array:
+    def __call__(self, x: mx.array, v0: mx.array | None = None) -> tuple[mx.array, mx.array]:
         bsz, seqlen, dim = x.shape
         q = self.c_q(x).reshape(bsz, seqlen, self.num_heads, self.head_dim).transpose(0, 2, 1, 3)
         k = self.c_k(x).reshape(bsz, seqlen, self.num_kv_heads, self.head_dim).transpose(0, 2, 1, 3)
         v = self.c_v(x).reshape(bsz, seqlen, self.num_kv_heads, self.head_dim).transpose(0, 2, 1, 3)
+        # Value Residual: blend first-block V into current V
+        if self.is_first_layer:
+            v0_out = v  # store first block's V for later layers
+        else:
+            v0_out = v0
+            if v0 is not None:
+                lam = self.vr_lambda.astype(v.dtype)
+                v = lam[0] * v + lam[1] * v0
         q = self.rope(rms_norm(q).astype(COMPUTE_DTYPE))
         k = self.rope(rms_norm(k).astype(COMPUTE_DTYPE))
         q = q * self.q_gain.astype(q.dtype)[None, :, None, None]
         y = mx.fast.scaled_dot_product_attention(q, k, v, scale=self.scale, mask="causal")
         y = y.transpose(0, 2, 1, 3).reshape(bsz, seqlen, dim)
-        return self.proj(y)
+        return self.proj(y), v0_out
 
 
 class MLP(nn.Module):
@@ -201,11 +214,13 @@ class MLP(nn.Module):
 
 
 class Block(nn.Module):
-    def __init__(self, dim: int, num_heads: int, num_kv_heads: int, mlp_mult: int, rope_base: float, qk_gain_init: float):
+    def __init__(self, dim: int, num_heads: int, num_kv_heads: int, mlp_mult: int, rope_base: float,
+                 qk_gain_init: float, is_first_layer: bool = False):
         super().__init__()
         self.attn_norm = RMSNormNoWeight()
         self.mlp_norm = RMSNormNoWeight()
-        self.attn = CausalSelfAttention(dim, num_heads, num_kv_heads, rope_base, qk_gain_init)
+        self.attn = CausalSelfAttention(dim, num_heads, num_kv_heads, rope_base, qk_gain_init,
+                                        is_first_layer=is_first_layer)
         self.mlp = MLP(dim, mlp_mult)
         self.attn_scale = mx.ones((dim,), dtype=mx.float32)
         self.mlp_scale = mx.ones((dim,), dtype=mx.float32)
@@ -213,13 +228,13 @@ class Block(nn.Module):
             np.stack((np.ones((dim,), dtype=np.float32), np.zeros((dim,), dtype=np.float32)))
         )
 
-    def __call__(self, x: mx.array, x0: mx.array) -> mx.array:
+    def __call__(self, x: mx.array, x0: mx.array, v0: mx.array | None = None) -> tuple[mx.array, mx.array]:
         mix = self.resid_mix.astype(x.dtype)
         x = mix[0][None, None, :] * x + mix[1][None, None, :] * x0
-        attn_out = self.attn(self.attn_norm(x))
+        attn_out, v0_out = self.attn(self.attn_norm(x), v0)
         x = x + self.attn_scale.astype(x.dtype)[None, None, :] * attn_out
         x = x + self.mlp_scale.astype(x.dtype)[None, None, :] * self.mlp(self.mlp_norm(x))
-        return x
+        return x, v0_out
 
 
 class GPT(nn.Module):
@@ -237,8 +252,9 @@ class GPT(nn.Module):
         self.num_skip_weights = min(self.num_encoder_layers, self.num_decoder_layers)
         self.skip_weights = mx.ones((self.num_skip_weights, dim), dtype=mx.float32)
         self.blocks = [
-            Block(dim, num_heads, num_kv_heads, mlp_mult, rope_base, qk_gain_init)
-            for _ in range(num_layers)
+            Block(dim, num_heads, num_kv_heads, mlp_mult, rope_base, qk_gain_init,
+                  is_first_layer=(i == 0))
+            for i in range(num_layers)
         ]
         self.final_norm = RMSNormNoWeight()
 
@@ -256,14 +272,15 @@ class GPT(nn.Module):
     def __call__(self, input_ids: mx.array) -> mx.array:
         x = rms_norm(self.tok_emb(input_ids).astype(COMPUTE_DTYPE))
         x0 = x
+        v0 = None
         skips: list[mx.array] = []
         for i in range(self.num_encoder_layers):
-            x = self.blocks[i](x, x0)
+            x, v0 = self.blocks[i](x, x0, v0)
             skips.append(x)
         for i in range(self.num_decoder_layers):
             if skips:
                 x = x + self.skip_weights[i].astype(x.dtype)[None, None, :] * skips.pop()
-            x = self.blocks[self.num_encoder_layers + i](x, x0)
+            x, v0 = self.blocks[self.num_encoder_layers + i](x, x0, v0)
         return self.final_norm(x)
 
     def forward_logits(self, input_ids: mx.array) -> mx.array:
