@@ -380,14 +380,11 @@ class SplitOptimizers:
 # ---------------------------------------------------------------------------
 
 def lr_mul(step: int, elapsed_ms: float) -> float:
-    if WARMDOWN_ITERS <= 0:
-        return 1.0
+    """Cosine annealing LR schedule based on wallclock time."""
     if TIME_BUDGET <= 0:
         return 1.0
-    step_ms = elapsed_ms / max(step, 1)
-    warmdown_ms = WARMDOWN_ITERS * step_ms
-    remaining_ms = max(1000.0 * TIME_BUDGET - elapsed_ms, 0.0)
-    return remaining_ms / max(warmdown_ms, 1e-9) if remaining_ms <= warmdown_ms else 1.0
+    progress = min(elapsed_ms / (1000.0 * TIME_BUDGET), 1.0)
+    return 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
 # ---------------------------------------------------------------------------
