@@ -207,11 +207,11 @@ class MLP(nn.Module):
         super().__init__()
         hidden = dim * mlp_mult
         self.fc = CastedLinear(dim, hidden)
+        self.gate = CastedLinear(dim, hidden)
         self.proj = CastedLinear(hidden, dim)
 
     def __call__(self, x: mx.array) -> mx.array:
-        x = nn.relu(self.fc(x))
-        return self.proj(x * x)
+        return self.proj(nn.silu(self.gate(x)) * self.fc(x))
 
 
 class Block(nn.Module):
