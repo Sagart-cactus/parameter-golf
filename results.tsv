@@ -1,0 +1,93 @@
+commit	val_bpb	compressed_mb	status	description
+61a2411	2.1945	7.4	keep	baseline: 9L 512D 8H 4KV 2xMLP
+f589557	4.5372	9.9	discard	depth recurrence 3x3 1536D - too large and slow (52 steps) LRs not tuned
+ecceb85	2.5678	9.4	discard	wider 7L 768D 12H 4KV - 176 steps not enough to converge
+07f9950	2.2753	8.8	discard	MLP 3x - 222 steps slightly fewer than baseline 244
+8bbfabd	2.0987	8.1	keep	matrix LR 0.04->0.06 IMPROVEMENT
+f817a78	2.0511	8.5	keep	matrix LR 0.06->0.08 IMPROVEMENT
+ad4b836	2.0249	8.9	keep	matrix LR 0.08->0.10 IMPROVEMENT
+0d7080a	2.0085	9.3	keep	matrix LR 0.10->0.12 IMPROVEMENT
+07c2673	1.9872	9.8	keep	matrix LR 0.12->0.16 IMPROVEMENT
+d6772d3	1.9791	10.3	keep	matrix LR 0.16->0.20 IMPROVEMENT (diminishing returns)
+a7e03f3	1.9728	10.7	keep	matrix LR 0.20->0.24 IMPROVEMENT (plateau reached)
+# SUMMARY 1-10: LR sweep 0.04->0.24 improved BPB from 2.19 to 1.97.
+23c7d1b	2.0003	10.7	discard	embed LR 0.05->0.10 - worse
+b75db5c	1.9794	10.6	discard	scalar LR 0.04->0.08 - no improvement
+48e4666	1.9546	10.6	keep	remove U-Net skip connections IMPROVEMENT
+493ecf9	1.9498	10.6	keep	remove resid_mix and x0 (simplify Block) IMPROVEMENT
+cf1ffb6	2.0810	12.7	discard	12 layers - too slow 141 steps
+b3725f8	0.0000	0.0	crash	MLP 4x - eval interrupted by power loss (only 113 steps - too slow)
+d5b34a3	2.1587	9.2	discard	KV heads 4->2 - quality degraded significantly
+cc35e3d	1.9613	10.5	discard	logit softcap 30->15 - slightly worse
+3af8060	2.1212	8.7	discard	batch 32K->65K - only 127 steps not enough
+# SUMMARY 11-19: Simplification wins. Batch 32K sweet spot. Step count is key constraint.
+66a9679	1.9687	12.7	discard	batch 16K grad_accum=2 - 465 steps but too noisy
+35b105c	1.9400	10.5	keep	plain ReLU instead of ReLU^2 IMPROVEMENT
+66541e3	1.9525	10.6	discard	GELU - slightly worse than ReLU
+22ebc53	1.9626	13.2	discard	SwiGLU - slower (220 steps) extra params not worth it
+23118dc	1.9443	10.6	keep	remove attn_scale/mlp_scale IMPROVEMENT (simpler is better)
+85347d0	1.9650	10.6	discard	remove q_gain - it was actually helping
+70c6fb5	1.9352	10.5	keep	q_gain init 1.5->2.5 IMPROVEMENT
+18a3db8	1.9006	10.9	keep	sliding window eval (stride=512) + FP16 embedding IMPROVEMENT
+9f1cdfa	1.9023	10.8	discard	Muon weight decay 0.02 - no improvement at 250 steps
+b45112b	1.9085	10.9	discard	stride 512->256 - slightly worse (less val coverage)
+# SUMMARY 20-29: Best=1.901. SW eval + FP16 embed big win. Activation/init tuning minor.
+37e7d1d	1.9604	11.7	discard	10 layers - slower steps (227 vs 250)
+5ee983b	1.9068	11.3	discard	matrix LR 0.24->0.30 - marginal regression
+d19aed4	2.0084	9.6	discard	Muon NS 5->3 - degraded update quality significantly
+fe27c88	2.1161	14.7	discard	warmdown 1200->200 - LR stays too high too long
+2135d13	1.9719	9.7	discard	warmdown 1200->2400 - LR decays too fast
+266cca7	2.0015	11.0	discard	overtone spectral embed init - hurt convergence
+e6f23d5	1.9061	10.8	discard	grad clip 1.0 - no improvement
+(nocommit)	1.7021	13.2	info	10min training (502 steps) - confirms more steps = much better BPB
+# Experiments 38-44: embed LR, momentum, warmup, RMSNorm-before-proj, FP16 attn, depth recurrence, no-softcap-eval all discarded
+9958c11	1.6925	13.2	keep	TIME_BUDGET 300->600s (10 min training, 499 steps) MAJOR IMPROVEMENT
+9c78baf	1.6811	12.6	keep	Muon weight decay 0.02 (works better with 500 steps) IMPROVEMENT
+740ec3e	1.6991	13.5	discard	10 layers - still too slow (449 vs 498 steps at 10min)
+de7451d	1.7062	15.4	discard	MLP 3x - FAIL exceeded 16MB limit (16.1MB)
+3738f6f	1.6755	12.1	keep	weight decay 0.02->0.04 IMPROVEMENT (also better compression)
+ce45b7c	1.6659	11.7	keep	weight decay 0.04->0.06 IMPROVEMENT
+920fbf5	1.6749	11.2	discard	weight decay 0.06->0.10 - too aggressive
+# SUMMARY 45-51: 10min training + WD sweep = best 1.666 BPB. WD sweet spot at 0.06.
+df52fe5	1.6665	11.7	discard	Adam beta1 0.9->0.8 - no change
+fc5daf5	1.6108	12.7	keep	TIME_BUDGET 600->1200s (20min, 1011 steps) MAJOR IMPROVEMENT
+4f18883	1.5878	12.7	keep	TIME_BUDGET 1200->1800s (30min, 1515 steps) IMPROVEMENT
+9c45929	1.5764	12.6	keep	TIME_BUDGET 1800->3600s (60min, 3029 steps) IMPROVEMENT (diminishing returns)
+# Scaling: 5min=1.90, 10min=1.69, 20min=1.61, 30min=1.59, 60min=1.58. ~0.12 BPB per 2x steps.
+20baa4d	1.6025	15.1	discard	MLP 3x + WD 0.08 - too big/slow (2702 steps vs 3029)
+182e983	1.5640	12.7	keep	stride 128 + 5M val tokens (better eval measurement) IMPROVEMENT
+c0a5d92	1.5515	12.6	keep	matrix LR 0.24->0.20 (better at 3000 steps) IMPROVEMENT
+ac3f5c3	1.5310	12.5	keep	matrix LR 0.20->0.16 IMPROVEMENT
+6bc7e63	1.5190	12.3	keep	matrix LR 0.16->0.12 IMPROVEMENT
+6dae6cd	1.4918	12.1	keep	matrix LR 0.12->0.08 IMPROVEMENT
+3b82ce7	1.4729	12.0	keep	matrix LR 0.08->0.06 IMPROVEMENT
+14f027f	1.4543	11.8	keep	matrix LR 0.06->0.04 IMPROVEMENT
+fd8731d	1.4518	11.6	keep	matrix LR 0.04->0.03 IMPROVEMENT (marginal - near optimal)
+# SUMMARY 57-64: LR re-sweep at 3000 steps: 0.24->0.03 best at 0.03. Key insight: optimal LR scales inversely with step count.
+39604f4	1.4482	11.6	keep	3 training shards (more data diversity) IMPROVEMENT
+20ffeff	1.4328	11.6	keep	TIME_BUDGET 3600->7200s (2hr, 6057 steps) IMPROVEMENT
+442c3b6	1.4207	11.5	keep	10 shards + 4hr training (12114 steps) IMPROVEMENT
+# Current best: 1.421 BPB at 12K steps. Reference is 1.175 at 10K steps on H100.
+841ed2e	1.4236	11.6	discard	stride 128->64 - no improvement (less token coverage)
+853de3e	1.4182	10.9	keep	re-add U-Net skip connections (HELPS at 12K steps!) IMPROVEMENT
+c3395fb	1.3973	11.0	keep	re-add resid_mix x0 blending (HELPS at 12K steps!) IMPROVEMENT
+# Key insight: features that hurt at 250 steps (skips, resid_mix) HELP at 12K steps. Enough training reveals their benefit.
+bf68761	1.3930	10.9	keep	re-add attn_scale/mlp_scale IMPROVEMENT
+# Now back to full original architecture + optimized hyperparams. Best: 1.393 BPB.
+c895deb	1.3803	10.9	keep	matrix LR 0.03->0.02 (better at 12K steps) IMPROVEMENT
+2947e03	1.3781	11.0	keep	Value Residual (ResFormer) IMPROVEMENT
+342be7f	1.9262	10.7	discard	EMA decay=0.995 - WAY too aggressive, blurred weights
+4e2ab03	1.3801	11.0	discard	Gated Attention - no meaningful improvement over VR alone
+e754dc6	1.3650	11.0	keep	ReLU^2 back (HELPS at 12K steps!) IMPROVEMENT
+754c165	1.3567	10.8	keep	matrix LR 0.02->0.015 IMPROVEMENT
+# === RESET: Challenge-realistic settings (1hr/3K steps, LR=0.04) ===
+9582494	1.4272	11.1	keep	new baseline: 1hr 3K steps LR=0.04 (challenge-realistic)
+28976f8	1.4357	12.2	discard	10 layers - fewer steps (2626 vs 2901)
+08dc545	1.4431	12.4	discard	544D wider - 20% slower per step (2319 vs 2901)
+22a619a	1.4178	11.0	keep	cosine annealing LR schedule IMPROVEMENT
+655209a	1.4192	11.0	discard	embed init std 0.005->0.01 - no improvement
+2166923	1.4173	11.0	discard	RoPE base 10000->50000 - no meaningful change
+2b2938a	1.4234	10.7	discard	logit softcap 30->50 - worse
+a19b9f1	1.4166	11.0	discard	Adam WD 0.01 on embed - no meaningful change
+2e2a490	1.4149	13.5	keep	SwiGLU MLP (helps at 3K steps, 13.5MB compressed) IMPROVEMENT
+d376792	1.4179	12.4	discard	Muon WD 0.06->0.08 with SwiGLU - slightly worse BPB
