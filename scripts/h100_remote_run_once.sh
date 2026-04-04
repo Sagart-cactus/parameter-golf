@@ -64,7 +64,7 @@ VAL_LOSS_EVERY='$val_loss_every' \
 MAX_SW_VAL_TOKENS='$max_sw_val_tokens' \
 SW_STRIDE='$sw_stride' \
 SW_BATCH_SIZE='$sw_batch_size' \
-$extra_env_cmd\
+${extra_env_cmd}\
 python3 -u train_gpt.py 2>&1 | tee '$run_log'
 EOF
 )
