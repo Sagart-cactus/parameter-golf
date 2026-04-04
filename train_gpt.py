@@ -66,6 +66,7 @@ class Hyperparameters:
     model_dim = int(os.environ.get("MODEL_DIM", 512))
     num_heads = int(os.environ.get("NUM_HEADS", 8))
     mlp_mult = int(os.environ.get("MLP_MULT", 2))
+    mlp_act = os.environ.get("MLP_ACT", "swiglu").lower().replace("^", "")
     tie_embeddings = bool(int(os.environ.get("TIE_EMBEDDINGS", "1")))
     rope_base = float(os.environ.get("ROPE_BASE", 10000.0))
     logit_softcap = float(os.environ.get("LOGIT_SOFTCAP", 30.0))
@@ -709,17 +710,27 @@ class CausalSelfAttention(nn.Module):
 
 
 class MLP(nn.Module):
-    # SwiGLU MLP — gated activation used in modern transformers (Llama, Gemma)
-    def __init__(self, dim: int, mlp_mult: int):
+    # Allow activation sweeps without forking the trainer file.
+    def __init__(self, dim: int, mlp_mult: int, mlp_act: str):
         super().__init__()
         hidden = mlp_mult * dim
+        self.mlp_act = mlp_act
         self.fc = CastedLinear(dim, hidden, bias=False)
-        self.gate = CastedLinear(dim, hidden, bias=False)
+        self.gate = CastedLinear(dim, hidden, bias=False) if mlp_act == "swiglu" else None
         self.proj = CastedLinear(hidden, dim, bias=False)
         self.proj._zero_init = True
 
     def forward(self, x: Tensor) -> Tensor:
-        return self.proj(F.silu(self.gate(x)) * self.fc(x))
+        if self.mlp_act == "swiglu":
+            if self.gate is None:
+                raise RuntimeError("gate projection is required for SwiGLU")
+            return self.proj(F.silu(self.gate(x)) * self.fc(x))
+        x = F.relu(self.fc(x))
+        if self.mlp_act == "relu2":
+            x = x * x
+        elif self.mlp_act != "relu":
+            raise ValueError(f"Unsupported mlp_act={self.mlp_act!r}")
+        return self.proj(x)
 
 
 class Block(nn.Module):
@@ -729,6 +740,7 @@ class Block(nn.Module):
         num_heads: int,
         num_kv_heads: int,
         mlp_mult: int,
+        mlp_act: str,
         rope_base: float,
         qk_gain_init: float,
         is_first_layer: bool = False,
@@ -737,7 +749,7 @@ class Block(nn.Module):
         self.attn_norm = RMSNorm()
         self.mlp_norm = RMSNorm()
         self.attn = CausalSelfAttention(dim, num_heads, num_kv_heads, rope_base, qk_gain_init, is_first_layer=is_first_layer)
-        self.mlp = MLP(dim, mlp_mult)
+        self.mlp = MLP(dim, mlp_mult, mlp_act)
         self.attn_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
         self.mlp_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
         self.resid_mix = nn.Parameter(torch.stack((torch.ones(dim), torch.zeros(dim))).float())
@@ -760,6 +772,7 @@ class GPT(nn.Module):
         num_heads: int,
         num_kv_heads: int,
         mlp_mult: int,
+        mlp_act: str,
         tie_embeddings: bool,
         tied_embed_init_std: float,
         logit_softcap: float,
@@ -784,6 +797,7 @@ class GPT(nn.Module):
                     num_heads,
                     num_kv_heads,
                     mlp_mult,
+                    mlp_act,
                     rope_base,
                     qk_gain_init,
                     is_first_layer=(i == 0),
@@ -938,6 +952,7 @@ def main() -> None:
         num_heads=args.num_heads,
         num_kv_heads=args.num_kv_heads,
         mlp_mult=args.mlp_mult,
+        mlp_act=args.mlp_act,
         tie_embeddings=args.tie_embeddings,
         tied_embed_init_std=args.tied_embed_init_std,
         logit_softcap=args.logit_softcap,
@@ -1007,7 +1022,7 @@ def main() -> None:
     log0("sdp_backends:cudnn=False flash=True mem_efficient=False math=False")
     log0(f"attention_mode:gqa num_heads:{args.num_heads} num_kv_heads:{args.num_kv_heads}")
     log0(
-        f"tie_embeddings:{args.tie_embeddings} embed_lr:{token_lr} "
+        f"tie_embeddings:{args.tie_embeddings} mlp_act:{args.mlp_act} embed_lr:{token_lr} "
         f"head_lr:{args.head_lr if base_model.lm_head is not None else 0.0} "
         f"matrix_lr:{args.matrix_lr} scalar_lr:{args.scalar_lr}"
     )

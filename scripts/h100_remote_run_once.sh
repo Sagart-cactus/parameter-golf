@@ -26,6 +26,34 @@ if tmux has-session -t "$session_name" 2>/dev/null; then
   fi
 fi
 
+extra_env_names=(
+  MATRIX_LR
+  SCALAR_LR
+  EMBED_LR
+  HEAD_LR
+  TIED_EMBED_LR
+  MUON_WEIGHT_DECAY
+  MUON_MOMENTUM
+  QK_GAIN_INIT
+  NUM_LAYERS
+  MODEL_DIM
+  NUM_HEADS
+  NUM_KV_HEADS
+  MLP_MULT
+  MLP_ACT
+  TRAIN_BATCH_TOKENS
+  TRAIN_SEQ_LEN
+  WARMUP_STEPS
+  WARMDOWN_ITERS
+  SEED
+)
+extra_env_cmd=""
+for name in "${extra_env_names[@]}"; do
+  if [[ -n "${!name:-}" ]]; then
+    printf -v extra_env_cmd '%s%s=%q \\\n' "$extra_env_cmd" "$name" "${!name}"
+  fi
+done
+
 cmd=$(
   cat <<EOF
 cd '$workdir' && rm -f '$run_log' final_model.pt final_model.int8.ptz && \
@@ -36,6 +64,7 @@ VAL_LOSS_EVERY='$val_loss_every' \
 MAX_SW_VAL_TOKENS='$max_sw_val_tokens' \
 SW_STRIDE='$sw_stride' \
 SW_BATCH_SIZE='$sw_batch_size' \
+$extra_env_cmd\
 python3 -u train_gpt.py 2>&1 | tee '$run_log'
 EOF
 )
